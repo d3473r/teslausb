@@ -4,6 +4,23 @@
 # the main Raspberry Pi centric install scripts expect.
 #
 
+if [[ $EUID -ne 0 ]]
+then
+  echo "STOP: Run sudo -i."
+  exit 1
+fi
+
+if [ ! -L /teslausb ]
+then
+  rm -rf /teslausb
+  if [ -d /boot/firmware ] && findmnt --fstab /boot/firmware &> /dev/null
+  then
+    ln -s /boot/firmware /teslausb
+  else
+    ln -s /boot /teslausb
+  fi
+fi
+
 function error_exit {
   echo "STOP: $*"
   exit 1
@@ -34,14 +51,12 @@ rootdev="/dev/${rootname}"
 marker="/root/RESIZE_ATTEMPTED"
 
 # Check that the root partition is the last one.
-lastpart=$(sfdisk -l "$rootdev" | tail -1 | awk '{print $1}')
+lastpart=$(sfdisk -q -l "$rootdev" | tail +2 | sort -n -k 2 | tail -1 | awk '{print $1}')
 
 # Check if there is sufficient unpartitioned space after the last
 # partition to create the backingfiles and mutable partitions.
-# TODO: provide a way to skip this, to support having boot+root on
-# eMMC or sd card, and storage elsewhere
 unpart=$(sfdisk -F "$rootdev" | grep -o '[0-9]* bytes' | head -1 | awk '{print $1}')
-if [ "$unpart" -lt  $(( (1<<30) * 32)) ]
+if [ "${1:-}" != "norootshrink" ] && [ "$unpart" -lt  $(( (1<<30) * 32)) ]
 then
   # This script will only shrink the root partition, and if there's another
   # partition following the root partition, we won't be able to grow the
@@ -58,8 +73,8 @@ then
   devsectorsize=$(cat "/sys/block/${rootname}/queue/hw_sector_size")
   read -r fsblockcount fsblocksize < <(tune2fs -l "${rootpart}" | grep "Block count:\|Block size:" | awk ' {print $2}' FS=: | tr -d ' ' | tr '\n' ' ' | (cat; echo))
   fsnumsectors=$((fsblockcount * fsblocksize / devsectorsize))
-  partnumsectors=$(sfdisk -l -o Sectors "${rootdev}" | tail -1)
-  partnumsector=$((partnumsectors - 1));
+  partnumsectors=$(sfdisk -q -l -o Sectors "${rootdev}" | tail +2 | sort -n | tail -1)
+  partnumsectors=$((partnumsectors - 1));
   if [ "$partnumsectors" -le "$fsnumsectors" ]
   then
     if [ -f "$marker" ]
@@ -81,24 +96,16 @@ then
 		EOF
     chmod a+x /etc/rc.local
 
-    # The user should have configured networking manually, so disable wifi setup
-    touch /boot/WIFI_ENABLED
-
     if [ ! -e "/boot/initrd.img-$(uname -r)" ]
     then
       # This device did not boot using an initramfs. If we're running
       # Raspberry Pi OS, we can switch it over to using initramfs first,
       # then revert back after.
-      ISSUE=/boot/issue.txt
-      if [ -f /boot/firmware/issue.txt ]
-      then
-        ISSUE=/boot/firmware/issue.txt
-      fi
-      if [ -f "$ISSUE" ] && grep -q Raspberry "$ISSUE" && [ -e /boot/config.txt ]
+      if [ -f /etc/os-release ] && grep -q Raspbian /etc/os-release && [ -e /teslausb/config.txt ]
       then
         echo "Temporarily switching Rasspberry Pi OS to use initramfs"
         update-initramfs -c -k "$(uname -r)"
-        echo "initramfs initrd.img-$(uname -r) followkernel # TESLAUSB-REMOVE" >> /boot/config.txt        
+        echo "initramfs initrd.img-$(uname -r) followkernel # TESLAUSB-REMOVE" >> /teslausb/config.txt
       else
         error_exit "can't automatically shrink root partition for this OS, please shrink it manually before proceeding"
       fi
@@ -116,15 +123,15 @@ then
   # shrink root partition to match root file system size
   echo "shrinking root partition to match root fs, $fsnumsectors sectors"
   sleep 3
-  rootpartstartsector=$(sfdisk -l -o Start "${rootdev}" | tail -1)
+  rootpartstartsector=$(sfdisk -q -l -o Start "${rootdev}" | tail +2 | sort -n | tail -1)
   partnum=${rootpart:0-1}
 
   echo "${rootpartstartsector},${fsnumsectors}" | sfdisk --force "${rootdev}" -N "${partnum}"
 
-  if [ -e /boot/config.txt ] && grep -q TESLAUSB-REMOVE /boot/config.txt
+  if [ -e /teslausb/config.txt ] && grep -q TESLAUSB-REMOVE /teslausb/config.txt
   then
     # switch Raspberry Pi OS back to not using initramfs
-    sed -i '/TESLAUSB-REMOVE/d' /boot/config.txt
+    sed -i '/TESLAUSB-REMOVE/d' /teslausb/config.txt
     rm -rf "/boot/initrd.img-$(uname -r)"
   else
     # restore initramfs without the resize code that debian-resizefs.sh added
@@ -136,22 +143,25 @@ then
 fi
 
 # Copy the sample config file from github
-if [ ! -e /boot/teslausb_setup_variables.conf ] && [ ! -e /root/teslausb_setup_variables.conf ]
+if [ ! -e /teslausb/teslausb_setup_variables.conf ] && [ ! -e /root/teslausb_setup_variables.conf ]
 then
-  while ! curl -o /boot/teslausb_setup_variables.conf https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/teslausb_setup_variables.conf.sample
+  while ! curl -o /teslausb/teslausb_setup_variables.conf https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/teslausb_setup_variables.conf.sample
   do
     sleep 1
   done
 fi
 
 # and the wifi config template
-if [ ! -e /boot/wpa_supplicant.conf.sample ]
+if [ ! -e /teslausb/wpa_supplicant.conf.sample ]
 then
-  while ! curl -o /boot/wpa_supplicant.conf.sample https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/wpa_supplicant.conf.sample
+  while ! curl -o /teslausb/wpa_supplicant.conf.sample https://raw.githubusercontent.com/marcone/teslausb/main-dev/pi-gen-sources/00-teslausb-tweaks/files/wpa_supplicant.conf.sample
   do
     sleep 1
   done
 fi
+
+# The user should have configured networking manually, so disable wifi setup
+touch /teslausb/WIFI_ENABLED
 
 # Copy our rc.local from github, which will allow setup to
 # continue using the regular "one step setup" process used
@@ -190,7 +200,7 @@ then
   if [ ! -e "/home/$DEFUSER/.bashrc" ] || ! grep -q "SETUP_FINISHED" "/home/$DEFUSER/.bashrc"
   then
     cat <<- EOF >> "/home/$DEFUSER/.bashrc"
-		if [ ! -e /boot/TESLAUSB_SETUP_FINISHED ]
+		if [ ! -e /teslausb/TESLAUSB_SETUP_FINISHED ]
 		then
 		  echo "+-------------------------------------------+"
 		  echo "| To continue teslausb setup, run 'sudo -i' |"
@@ -204,13 +214,13 @@ fi
 if ! grep -q "SETUP_FINISHED" /root/.bashrc
 then
   cat <<- EOF >> /root/.bashrc
-	if [ ! -e /boot/TESLAUSB_SETUP_FINISHED ]
+	if [ ! -e /teslausb/TESLAUSB_SETUP_FINISHED ]
 	then
 	  echo "+------------------------------------------------------------------------+"
 	  echo "| To continue teslausb setup, edit the file                              |"
-	  echo "| /boot/teslausb_setup_variables.conf with your favorite                 |"
-	  echo "| editor, e.g. 'nano /boot/teslausb_setup_variables.conf' and fill in    |"
-	  echo "| the required variables. Instructions are in the file, and at           |"
+	  echo "| /teslausb/teslausb_setup_variables.conf with your favorite             |"
+	  echo "| editor, e.g. 'nano /teslausb/teslausb_setup_variables.conf' and fill   |"
+	  echo "| in the required variables. Instructions are in the file, and at        |"
 	  echo "| https://github.com/marcone/teslausb/blob/main-dev/doc/OneStepSetup.md  |"
 	  echo "| (though ignore the Raspberry Pi specific bits about flashing and       |"
 	  echo "| mounting the sd card on a PC)                                          |"

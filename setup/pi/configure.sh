@@ -54,7 +54,10 @@ function check_variable () {
 # Check that the default rsync works correctly, and install a newer version
 # if needed.
 function check_default_rsync {
-  hash rsync
+  if ! hash rsync
+  then
+    apt install rsync
+  fi
 
   rm -rf /tmp/rsynctest
   mkdir -p /tmp/rsynctest/src /tmp/rsynctest/dst
@@ -127,7 +130,10 @@ function check_archive_configs () {
             export ARCHIVE_SERVER="8.8.8.8" # since it's a cloud hosted drive we'll just set this to google dns
             ;;
         cifs)
-            check_variable "SHARE_NAME"
+            if [ -e /backingfiles/cam_disk.bin ]
+            then
+              check_variable "SHARE_NAME"
+            fi
             check_variable "SHARE_USER"
             check_variable "SHARE_PASSWORD"
             check_variable "ARCHIVE_SERVER"

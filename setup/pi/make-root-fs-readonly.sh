@@ -50,7 +50,7 @@ systemctl disable radxa-adbd radxa-usbnet &> /dev/null || true
 systemctl disable armbian-led-state &> /dev/null || true
 
 log_progress "Removing unwanted packages..."
-apt-get remove -y --force-yes --purge triggerhappy logrotate dphys-swapfile bluez alsa-utils
+apt-get remove -y --force-yes --purge triggerhappy logrotate dphys-swapfile bluez
 apt-get -y --force-yes autoremove --purge
 # Replace log management with busybox (use logread if needed)
 log_progress "Installing ntp and busybox-syslogd..."
@@ -58,7 +58,7 @@ apt-get -y --force-yes install ntp busybox-syslogd; dpkg --purge rsyslog
 
 log_progress "Configuring system..."
 
-# Add fsck.mode=auto, noswap and/or ro to end of /boot/cmdline.txt
+# Add fsck.mode=auto, noswap and/or ro to end of cmdline.txt
 # Remove the fastboot parameter because it makes fsck not run
 remove_cmdline_txt_param fastboot
 append_cmdline_txt_param fsck.mode=auto
@@ -96,6 +96,14 @@ fi
 if [ -e /lib/systemd/system/fake-hwclock.service ]
 then
   sed -i 's/Before=.*/After=mutable.mount/' /lib/systemd/system/fake-hwclock.service
+fi
+
+if [ -d /var/lib/NetworkManager/ ] && [ -n "$AP_SSID" ]
+then
+  log_progress "Moving /var/lib/NetworkManager to mutable"
+  mkdir -p /mutable/var/lib/
+  mv /var/lib/NetworkManager /mutable/var/lib/
+  ln -s /mutable/var/lib/NetworkManager/ /var/lib/NetworkManager
 fi
 
 # Create a configs directory for others to use
@@ -141,6 +149,11 @@ then
   sed -i -r "s@(/boot\s+vfat\s+\S+)@\1,ro@" /etc/fstab
 fi
 
+if ! grep -P -q "/boot/firmware\s+vfat\s+.+?(?=,ro)" /etc/fstab
+then
+  sed -i -r "s@(/boot/firmware\s+vfat\s+\S+)@\1,ro@" /etc/fstab
+fi
+
 if ! grep -P -q "/\s+ext4\s+.+?(?=,ro)" /etc/fstab
 then
   sed -i -r "s@(/\s+ext4\s+\S+)@\1,ro@" /etc/fstab
@@ -174,6 +187,19 @@ then
     mkdir -p /var/lib/ntp
   fi
   echo "tmpfs /var/lib/ntp tmpfs nodev,nosuid 0 0" >> /etc/fstab
+fi
+
+# work around 'mount' warning that's printed when /etc/fstab is
+# newer than /run/systemd/systemd-units-load
+touch -t 197001010000 /etc/fstab
+
+# autofs by default has dependencies on various network services, because
+# one of its purposes is to automount NFS filesystems.
+# TeslaUSB doesn't use NFS though, and removing those dependencies speeds
+# up TeslaUSB startup.
+if [ ! -e /etc/systemd/system/autofs.service ]
+then
+  grep -v '^Wants=\|^After=' /lib/systemd/system/autofs.service  > /etc/systemd/system/autofs.service
 fi
 
 log_progress "done"
